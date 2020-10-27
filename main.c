@@ -42,6 +42,12 @@ typedef struct {
     int *end;
 } thread_writer_data;
 
+
+typedef struct {
+    int thread_number;
+    int file_number;
+} thread_reader_data;
+
 #define RANDOM_SIZE 10000
 int randomByteIndex;
 char randomChar[RANDOM_SIZE];
@@ -67,8 +73,8 @@ void *WriteToMemory(void *args) {
         bytesWrote += 1;
     }
 
-    printf("%u\n", bytesWrote);
-    printf("%u %u\n", writeArgs->start, writeArgs->end);
+//    printf("%u\n", bytesWrote);
+//    printf("%u %u\n", writeArgs->start, writeArgs->end);
 
 #ifdef LOG
     printf("Thread with ID %lu finished and wrote %u bytes\n", writeArgs->threadId, bytesWrote);
@@ -92,32 +98,33 @@ char *seq_read(int fd, int file_size) {
     return buffer;
 }
 
-void seq_write(void *ptr, int size, int n, int fd, const char* filepath) {
+void seq_write(void *ptr, int size, int n, int fd, const char *filepath) {
     struct stat fstat;
     stat(filepath, &fstat);
     int blksize = (int) fstat.st_blksize;
-    int align = blksize-1;
+    int align = blksize - 1;
     int bytes = size * n;
-    // impossible to use G from the task because O_DIRECT flag requires aligned both the memory address and your buffer to the filesystem's block size
+    // impossible to use G from the task because O_DIRECT flag requires
+    // aligned both the memory address and your buffer to the filesystem's block size
     int blocks = bytes / blksize;
 
-    char *buff = (char *) malloc((int)blksize+align);
+    char *buff = (char *) malloc((int) blksize + align);
     // stackoverflow
-    char *wbuff = (char *)(((uintptr_t)buff+align)&~((uintptr_t)align));
+    char *wbuff = (char *) (((uintptr_t) buff + align) & ~((uintptr_t) align));
 
     for (int i = 0; i < blocks; ++i) {
-        char* buf_ptr = ptr + blksize*i;
+        char *buf_ptr = ptr + blksize * i;
         // copy from memory to write buffer
         for (int j = 0; j < blksize; j++) {
             buff[j] = buf_ptr[j];
         }
-        if (pwrite(fd, wbuff, blksize, blksize*i) < 0) {
-            free((char *)buff);
+        if (pwrite(fd, wbuff, blksize, blksize * i) < 0) {
+            free((char *) buff);
             printf("write error occurred\n");
             return;
         }
     }
-    free((char *)buff);
+    free((char *) buff);
 }
 
 void *write_to_files(void *thread_data) {
@@ -137,7 +144,7 @@ void *write_to_files(void *thread_data) {
         readLock.l_type = F_RDLCK;
         fcntl(current_file_fd, F_SETLKW, &readLock);
 
-        if (current_file_fd == - 1) {
+        if (current_file_fd == -1) {
             printf("error on open file for write\n");
             return NULL;
         }
@@ -160,6 +167,45 @@ void *write_to_files(void *thread_data) {
         close(current_file_fd);
 
     }
+    return NULL;
+}
+
+
+void *read_files(void *thread_data) {
+    thread_reader_data *data = (thread_reader_data *) thread_data;
+
+    char filename[6] = "lab1_0";
+    filename[5] = '0' + data->file_number;
+    int file_desc = -1;
+
+    struct flock writeLock;
+    memset(&writeLock, 0, sizeof(writeLock));
+    while (file_desc == -1) {
+        file_desc = open(filename, O_RDONLY, 00666);
+    }
+    writeLock.l_type = F_WRLCK;
+    fcntl(file_desc, F_SETLKW, &writeLock);
+
+    struct stat st;
+    stat(filename, &st);
+    int file_size = st.st_size;
+
+    char *buffer = seq_read(file_desc, file_size);
+
+    writeLock.l_type = F_UNLCK;
+    fcntl(file_desc, F_SETLKW, &writeLock);
+    close(file_desc);
+
+    int *int_buf = (int *) buffer;
+    long sum = 0;
+    for (int i = 0; i < file_size / 4; i++) {
+        sum += int_buf[i];
+    }
+
+
+//    printf("[READER-%d] file %s sum is %ld.\n", data->thread_number, filename, sum);
+
+    free(buffer);
     return NULL;
 }
 
@@ -220,6 +266,7 @@ int main() {
 // Тут основной код 0__0
     srand(time(NULL));
 //-------------------------------------WRITES RANDOM DATA TO MEMORY-------------------------------------
+
     const int mem_part = mBytes / D_THREADS / sizeof(*address);
     const int mem_last = mBytes % D_THREADS / sizeof(*address);
 
@@ -228,9 +275,9 @@ int main() {
     struct WriteToMemoryArgs *args;
     int i;
 
+    printf("Writing random data to memory...\n");
     struct timespec start, finish;
     double elapsed;
-
     clock_gettime(CLOCK_MONOTONIC, &start);
 
     for (i = 0; i < D_THREADS; ++i) {
@@ -274,17 +321,18 @@ int main() {
         pthread_join(writeToMemoryThreads[i], NULL);
     }
 
+
     clock_gettime(CLOCK_MONOTONIC, &finish);
-
-    elapsed = (finish.tv_sec - start.tv_sec);
-    elapsed += (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
-
+    elapsed = (double) (finish.tv_sec - start.tv_sec);
+    elapsed += (double) (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
     printf("Writing in memory took %f seconds\n", elapsed);
 
-//    while ((ch = getchar()) != '\n' && ch != EOF);
-//    printf("After input char program will continue writing data to file\n");
-//    getchar();
+
 //-------------------------------------WRITES RANDOM DATA TO FILES-------------------------------------
+
+
+    printf("Writing random data to files...\n");
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
     int filesAmount = (A_DATA_SIZE / E_OUTPUT_SIZE) + 1;
     if (A_DATA_SIZE % E_OUTPUT_SIZE != 0) {
@@ -304,69 +352,42 @@ int main() {
     pthread_create(thread_writer, NULL, write_to_files, writer_data);
     pthread_join(*thread_writer, NULL);
 
-//    int files[filesAmount];
-//    sem_t *fileSems = malloc(sizeof(sem_t) * filesAmount);
-//    CleanFiles(filesAmount, files);
-//    OpenFiles(filesAmount, files);
-//    printf("Here\n");
-//    pthread_t writeToFilesThreadId;
-//
-//    for (i = 0; i < filesAmount; i++) {
-//        sem_init(&fileSems[i], 0, 1);
-//    }
-//
-//    struct WriteToFilesArgs *writeToFilesArgs = malloc(sizeof(struct WriteToFilesArgs));
-//
-////    clock_gettime(CLOCK_MONOTONIC, &start);
-//
-//    int fileSizeRemainder = bytes / (filesAmount);
-//    int fileSizeQuotient = bytes % (filesAmount);
-//
-//    writeToFilesArgs->fileSizeQuotient = fileSizeQuotient;
-//    writeToFilesArgs->fileSizeRemainder = fileSizeRemainder;
-//    writeToFilesArgs->files = files;
-//    writeToFilesArgs->fileSems = fileSems;
-//    writeToFilesArgs->filesAmount = filesAmount;
-//    writeToFilesArgs->memoryRegion = memoryRegion;
-//
-//    WriteToFilesOnce(writeToFilesArgs);
-//
-//
-//    /* l_type   l_whence  l_start  l_len  l_pid   */
-//    struct flock fl = {F_WRLCK, SEEK_SET, 0, 0, 0};
-//    int fd;
-//
-//    fl.l_pid = getpid();
-//
-//    if ((fd = open("lockdemo.c", O_RDWR)) == -1) {
-//        perror("open");
-//        exit(1);
-//    }
-//
-//    printf("Press <RETURN> to try to get lock: ");
-//    getchar();
-//    printf("Trying to get lock...");
-//
-//    if (fcntl(fd, F_SETLKW, &fl) == -1) {
-//        perror("fcntl");
-//        exit(1);
-//    }
-//
-//    printf("got lock\n");
-//    printf("Press <RETURN> to release lock: ");
-//    getchar();
-//
-//    fl.l_type = F_UNLCK;  /* set to unlock same region */
-//
-//    if (fcntl(fd, F_SETLK, &fl) == -1) {
-//        perror("fcntl");
-//        exit(1);
-//    }
-//
-//    printf("Unlocked.\n");
-//
-//    close(fd);
 
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+    elapsed = (double) (finish.tv_sec - start.tv_sec);
+    elapsed += (double) (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
+    printf("Writing to files took %f seconds\n", elapsed);
+
+
+    //-------------------------------------AGGREGATES-------------------------------------
+
+
+    printf("Counting aggregating function...\n");
+    clock_gettime(CLOCK_MONOTONIC, &start);
+
+    pthread_t *reader_threads = (pthread_t *) malloc(I_AGG_THREADS * sizeof(pthread_t));
+    thread_reader_data *reader_data = (thread_reader_data *) malloc(I_AGG_THREADS * sizeof(thread_reader_data));
+    int file_number = 0;
+    for (int i = 0; i < I_AGG_THREADS; ++i) {
+        if (file_number >= filesAmount) {
+            file_number = 0;
+        }
+        reader_data[i].thread_number = i;
+        reader_data[i].file_number = file_number;
+        file_number++;
+    }
+
+    for (int i = 0; i < I_AGG_THREADS; ++i) {
+        pthread_create(&(reader_threads[i]), NULL, read_files, &reader_data[i]);
+    }
+    for (int i = 0; i < I_AGG_THREADS; i++) {
+        pthread_join(reader_threads[i], NULL);
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &finish);
+    elapsed = (double) (finish.tv_sec - start.tv_sec);
+    elapsed += (double) (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
+    printf("Aggregation took %f seconds\n", elapsed);
 
 
 // Конец основного кода 0__0
@@ -384,42 +405,5 @@ int main() {
 
     return 0;
 
-//    printf("Size of pointer: %d\n", sizeof(ptr));
-//    ptr[0] = 5;
-//    printf("%d", ptr);
-//    printf("%d", ptr + 1);
 
-
-    char myRandomData[50];
-    size_t randomDataLen = 0;
-    while (randomDataLen < sizeof myRandomData) {
-        ssize_t result = read(randomFD, myRandomData + randomDataLen, (sizeof myRandomData) - randomDataLen);
-        if (result < 0) {
-            // something went wrong
-        }
-        randomDataLen += result;
-    }
-    close(outputFD);
-    close(randomFD);
-
-
-
-
-
-
-//
-//
-//
-//    for(int i=0; i<N; i++){
-//        printf("[%d] ",ptr[i]);
-//    }
-//
-//    printf("\n");
-//    int err = munmap(ptr, 10*sizeof(int));
-//
-//    if(err != 0){
-//        printf("UnMapping Failed\n");
-//        return 1;
-//    }
-//    return 0;
 }
