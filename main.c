@@ -1,14 +1,10 @@
 #include <stdio.h>
 #include <sys/mman.h>
 #include <math.h>
-//#include <fcntl.h>
 #include <stdlib.h>
 #include <zconf.h>
 #include <pthread.h>
 #include <string.h>
-
-#define O_DIRECT    00040000    /* direct disk access hint */
-
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <stdint.h>
@@ -17,7 +13,7 @@
 #define A_DATA_SIZE 313
 #define B_ADRRESS 0xE46AE4C0
 #define D_THREADS 89
-//#define D_THREADS 4
+#define RANDOM_SIZE 5000
 
 #define E_OUTPUT_SIZE 55
 #define G_BLOCK_SIZE 108
@@ -25,14 +21,14 @@
 #define I_AGG_THREADS 135
 
 
-struct WriteToMemoryArgs {
+typedef struct {
     int randomFD;
     unsigned char *address;
     int mBytes;
     int start;
     int end;
     pthread_t threadId;
-};
+} memory_writer_data;
 
 
 typedef struct {
@@ -48,7 +44,6 @@ typedef struct {
     int file_number;
 } thread_reader_data;
 
-#define RANDOM_SIZE 10000
 int randomByteIndex;
 char randomChar[RANDOM_SIZE];
 
@@ -65,7 +60,7 @@ unsigned char ReadChar(int randomFD) {
 }
 
 void *WriteToMemory(void *args) {
-    struct WriteToMemoryArgs *writeArgs = (struct WriteToMemoryArgs *) args;
+    memory_writer_data *writeArgs = (struct WriteToMemoryArgs *) args;
     unsigned int bytesWrote = 0;
     for (int i = writeArgs->start; i < writeArgs->end; ++i) {
         unsigned char random = ReadChar(writeArgs->randomFD);
@@ -76,9 +71,6 @@ void *WriteToMemory(void *args) {
 //    printf("%u\n", bytesWrote);
 //    printf("%u %u\n", writeArgs->start, writeArgs->end);
 
-#ifdef LOG
-    printf("Thread with ID %lu finished and wrote %u bytes\n", writeArgs->threadId, bytesWrote);
-#endif
     free(writeArgs);
 }
 
@@ -104,8 +96,9 @@ void seq_write(void *ptr, int size, int n, int fd, const char *filepath) {
     int blksize = (int) fstat.st_blksize;
     int align = blksize - 1;
     int bytes = size * n;
-    // impossible to use G from the task because O_DIRECT flag requires
-    // aligned both the memory address and your buffer to the filesystem's block size
+//    невозможно использовать G, потому что флаг O_DIRECT требует,
+//    чтобы адрес памяти и буфер были согласованы с размером
+//    блока файловой системы =(
     int blocks = bytes / blksize;
 
     char *buff = (char *) malloc((int) blksize + align);
@@ -180,7 +173,7 @@ void *read_files(void *thread_data) {
 
     struct flock writeLock;
     memset(&writeLock, 0, sizeof(writeLock));
-    while (file_desc == -1) {
+    while (file_desc < 0) {
         file_desc = open(filename, O_RDONLY, 00666);
     }
     writeLock.l_type = F_WRLCK;
@@ -229,23 +222,28 @@ int main() {
     }
 
 
-    //todo CHECKKK
 
     // lseek() устанавливает указатель положения в файле,
     // указанном дескриптором handle,
     // в положение, указанное аргументами offset (0 (seek_set) - начало, 1 - текущая, 2 - конец)
     // и origin.
-    if (lseek(outputFD, mBytes, SEEK_SET) == -1) {
+    if (lseek(outputFD, mBytes, SEEK_SET) < 0) {
         close(outputFD);
         perror("Error during calling lseek() to check availability");
         return 1;
     }
 
-    if (write(outputFD, "", 1) == -1) {
+    if (write(outputFD, "", 1) < 0) {
         close(outputFD);
         perror("Error during writing last byte of the file");
         return 1;
     }
+
+    char ch;
+    while ((ch = getchar()) != '\n' && ch != EOF);
+    printf("После ввода символа программа аллоцирует память\n");
+    getchar();
+
 
     // void * mmap (void *address, size_t length, int protect, int flags, int filedes, off_t offset)
     // PROT (protection): the access types of read, write and execute are the permissions on the content
@@ -263,16 +261,20 @@ int main() {
         return 1;
     }
 
-// Тут основной код 0__0
-    srand(time(NULL));
-//-------------------------------------WRITES RANDOM DATA TO MEMORY-------------------------------------
+    while ((ch = getchar()) != '\n' && ch != EOF);
+    printf("После ввода символа программа будет записывать данные в память\n");
+    getchar();
+
+//    ================================
+//    WRITE DATA TO MEMORY
+//    ================================
 
     const int mem_part = mBytes / D_THREADS / sizeof(*address);
     const int mem_last = mBytes % D_THREADS / sizeof(*address);
 
 //    https://habr.com/ru/post/326138/
     pthread_t writeToMemoryThreads[D_THREADS];
-    struct WriteToMemoryArgs *args;
+    memory_writer_data *args;
     int i;
 
     printf("Writing random data to memory...\n");
@@ -327,8 +329,14 @@ int main() {
     elapsed += (double) (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
     printf("Writing in memory took %f seconds\n", elapsed);
 
+    while ((ch = getchar()) != '\n' && ch != EOF);
+    printf("После ввода символа программа будет записывать данные в файл\n");
+    getchar();
 
-//-------------------------------------WRITES RANDOM DATA TO FILES-------------------------------------
+
+//    ================================
+//    WRITES DATA TO FILES
+//    ================================
 
 
     printf("Writing random data to files...\n");
@@ -338,9 +346,9 @@ int main() {
     if (A_DATA_SIZE % E_OUTPUT_SIZE != 0) {
         filesAmount++;
     }
-//#ifdef LOG
+
     printf("Files amount: %d\n", filesAmount);
-//#endif
+
 
     thread_writer_data *writer_data = (thread_writer_data *) malloc(sizeof(thread_writer_data));
     pthread_t *thread_writer = (pthread_t *) malloc(sizeof(pthread_t));
@@ -358,9 +366,9 @@ int main() {
     elapsed += (double) (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
     printf("Writing to files took %f seconds\n", elapsed);
 
-
-    //-------------------------------------AGGREGATES-------------------------------------
-
+//    ================================
+//    AGGREGATE DATA
+//    ================================
 
     printf("Counting aggregating function...\n");
     clock_gettime(CLOCK_MONOTONIC, &start);
@@ -390,9 +398,18 @@ int main() {
     printf("Aggregation took %f seconds\n", elapsed);
 
 
+    if (munmap(map_ptr, mBytes) == -1) {
+//        close(outputFD);
+        close(randomFD);
+        perror("Error un-mmapping the file");
+        exit(EXIT_FAILURE);
+    }
+
+    while ((ch = getchar()) != '\n' && ch != EOF);
+    printf("После ввода символа программа будет записывать данные в файл\n");
+    getchar();
+
 // Конец основного кода 0__0
-
-
 
     if (close(outputFD)) {
         printf("Error during file closing.\n");
