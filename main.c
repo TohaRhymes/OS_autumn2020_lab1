@@ -14,10 +14,8 @@
 #define B_ADRRESS 0xE46AE4C0
 #define D_THREADS 89
 #define RANDOM_SIZE 5000
-
 #define E_OUTPUT_SIZE 55
 #define G_BLOCK_SIZE 108
-
 #define I_AGG_THREADS 135
 
 
@@ -28,7 +26,7 @@ typedef struct {
     int start;
     int end;
     pthread_t threadId;
-} memory_writer_data;
+} MemoryWriterData;
 
 
 typedef struct {
@@ -36,13 +34,13 @@ typedef struct {
     int filesAmount;
     int *start;
     int *end;
-} thread_writer_data;
+} ThreadWriterData;
 
 
 typedef struct {
     int thread_number;
     int file_number;
-} thread_reader_data;
+} ThreadReaderData;
 
 int randomByteIndex;
 char randomChar[RANDOM_SIZE];
@@ -51,7 +49,7 @@ unsigned char ReadChar(int randomFD) {
     if (randomByteIndex >= RANDOM_SIZE) {
         size_t result = read(randomFD, &randomChar, sizeof(randomChar));
         if (result == -1) {
-            perror("ERROR WITH /dev/urandom\n");
+            perror("Ошибка с /dev/urandom\n");
             return 0;
         }
         randomByteIndex = 0;
@@ -60,7 +58,7 @@ unsigned char ReadChar(int randomFD) {
 }
 
 void *WriteToMemory(void *args) {
-    memory_writer_data *writeArgs = (struct WriteToMemoryArgs *) args;
+    MemoryWriterData *writeArgs = (MemoryWriterData *) (struct WriteToMemoryArgs *) args;
     unsigned int bytesWrote = 0;
     for (int i = writeArgs->start; i < writeArgs->end; ++i) {
         unsigned char random = ReadChar(writeArgs->randomFD);
@@ -68,13 +66,12 @@ void *WriteToMemory(void *args) {
         bytesWrote += 1;
     }
 
-//    printf("%u\n", bytesWrote);
-//    printf("%u %u\n", writeArgs->start, writeArgs->end);
 
     free(writeArgs);
+    return NULL;
 }
 
-char *seq_read(int fd, int file_size) {
+char *seqRead(int fd, int file_size) {
     char *buffer = (char *) malloc(file_size);
     int blocks = file_size / G_BLOCK_SIZE;
     int last_block_size = file_size % G_BLOCK_SIZE;
@@ -90,24 +87,26 @@ char *seq_read(int fd, int file_size) {
     return buffer;
 }
 
-void seq_write(void *ptr, int size, int n, int fd, const char *filepath) {
+void seqWrite(void *ptr, int size, int n, int fd, const char *filepath) {
     struct stat fstat;
+    /* Get file attributes for FILE and put them in BUF.  */
     stat(filepath, &fstat);
     int blksize = (int) fstat.st_blksize;
     int align = blksize - 1;
     int bytes = size * n;
 //    невозможно использовать G, потому что флаг O_DIRECT требует,
 //    чтобы адрес памяти и буфер были согласованы с размером
-//    блока файловой системы =(
+//    блока файловой системы.
+//  SOLUTION: https://coderoad.ru/34182535/%D0%9E%D1%88%D0%B8%D0%B1%D0%BA%D0%B0-%D0%B7%D0%B0%D0%BF%D0%B8%D1%81%D0%B8-%D0%BD%D0%B5%D0%B4%D0%BE%D0%BF%D1%83%D1%81%D1%82%D0%B8%D0%BC%D1%8B%D0%B9-%D0%B0%D1%80%D0%B3%D1%83%D0%BC%D0%B5%D0%BD%D1%82-%D0%BA%D0%BE%D0%B3%D0%B4%D0%B0-%D1%84%D0%B0%D0%B9%D0%BB-%D0%BE%D1%82%D0%BA%D1%80%D1%8B%D0%B2%D0%B0%D0%B5%D1%82%D1%81%D1%8F-%D1%81-%D0%BF%D0%BE%D0%BC%D0%BE%D1%89%D1%8C%D1%8E-O_DIRECT
     int blocks = bytes / blksize;
 
-    char *buff = (char *) malloc((int) blksize + align);
-    // stackoverflow
+    char *buff = (char *) malloc(blksize + align);
+    // из SOLUTION
     char *wbuff = (char *) (((uintptr_t) buff + align) & ~((uintptr_t) align));
 
     for (int i = 0; i < blocks; ++i) {
-        char *buf_ptr = ptr + blksize * i;
-        // copy from memory to write buffer
+        char *buf_ptr = (char *) ptr + blksize * i;
+        // копируем из памяти для записи в буфер
         for (int j = 0; j < blksize; j++) {
             buff[j] = buf_ptr[j];
         }
@@ -120,13 +119,13 @@ void seq_write(void *ptr, int size, int n, int fd, const char *filepath) {
     free((char *) buff);
 }
 
-void *write_to_files(void *thread_data) {
-    thread_writer_data *data = (thread_writer_data *) thread_data;
+void *writeToFiles(void *thread_data) {
+    ThreadWriterData *data = (ThreadWriterData *) thread_data;
     int *write_pointer = data->start;
 
     for (int i = 0; i < data->filesAmount; i++) {
-        char filename[6] = "lab1_0";
-        filename[5] = '0' + i;
+        char filename[9] = "os_file_0";
+        filename[8] = '0' + i;
 
         struct flock readLock;
         memset(&readLock, 0, sizeof(readLock));
@@ -138,19 +137,19 @@ void *write_to_files(void *thread_data) {
         fcntl(current_file_fd, F_SETLKW, &readLock);
 
         if (current_file_fd == -1) {
-            printf("error on open file for write\n");
+            printf("ошибка открытия файла на запись\n");
             return NULL;
         }
         int ints_to_file = data->ints_per_file;
         int is_done = 0;
         while (!is_done) {
             if (ints_to_file + write_pointer < data->end) {
-                seq_write(write_pointer, sizeof(int), ints_to_file, current_file_fd, filename);
+                seqWrite(write_pointer, sizeof(int), ints_to_file, current_file_fd, filename);
                 write_pointer += ints_to_file;
                 is_done = 1;
             } else {
                 int available = data->end - write_pointer;
-                seq_write(write_pointer, sizeof(int), available, current_file_fd, filename);
+                seqWrite(write_pointer, sizeof(int), available, current_file_fd, filename);
                 write_pointer = data->start;
                 ints_to_file -= available;
             }
@@ -164,8 +163,8 @@ void *write_to_files(void *thread_data) {
 }
 
 
-void *read_files(void *thread_data) {
-    thread_reader_data *data = (thread_reader_data *) thread_data;
+void *readFiles(void *thread_data) {
+    ThreadReaderData *data = (ThreadReaderData *) thread_data;
 
     char filename[6] = "lab1_0";
     filename[5] = '0' + data->file_number;
@@ -183,7 +182,7 @@ void *read_files(void *thread_data) {
     stat(filename, &st);
     int file_size = st.st_size;
 
-    char *buffer = seq_read(file_desc, file_size);
+    char *buffer = seqRead(file_desc, file_size);
 
     writeLock.l_type = F_UNLCK;
     fcntl(file_desc, F_SETLKW, &writeLock);
@@ -195,9 +194,6 @@ void *read_files(void *thread_data) {
         sum += int_buf[i];
     }
 
-
-//    printf("[READER-%d] file %s sum is %ld.\n", data->thread_number, filename, sum);
-
     free(buffer);
     return NULL;
 }
@@ -208,59 +204,47 @@ int main() {
     int mBytes = A_DATA_SIZE * pow(10, 6); // size in megabytes
     unsigned char *address = (unsigned char *) B_ADRRESS; // starting address
 
-    // nocache  = (mode_t) 040000
+
     int outputFD = open("output", O_RDWR | O_TRUNC | O_CREAT, (mode_t) 0777);
     if (outputFD < 0) {
-        perror("Can't open file\n");
+        perror("Невозможно открыть файл.\n");
         return 1;
     }
 
     int randomFD = open("/dev/urandom", O_RDONLY);
     if (randomFD < 0) {
-        perror("Can't read /dev/urandom\n");
+        perror("Невозможно прочитать /dev/urandom.\n");
         return 1;
     }
 
 
-
-    // lseek() устанавливает указатель положения в файле,
-    // указанном дескриптором handle,
-    // в положение, указанное аргументами offset (0 (seek_set) - начало, 1 - текущая, 2 - конец)
-    // и origin.
     if (lseek(outputFD, mBytes, SEEK_SET) < 0) {
         close(outputFD);
-        perror("Error during calling lseek() to check availability");
+        perror("Ошибка во время вызова lseek() - для проверки доступности.");
         return 1;
     }
 
     if (write(outputFD, "", 1) < 0) {
         close(outputFD);
-        perror("Error during writing last byte of the file");
+        perror("Ошибка во время записи последнего байта в файл");
         return 1;
     }
 
     char ch;
+    printf("Для старта нажмите любую кнопку.");
     while ((ch = getchar()) != '\n' && ch != EOF);
     printf("После ввода символа программа аллоцирует память\n");
     getchar();
 
 
-    // void * mmap (void *address, size_t length, int protect, int flags, int filedes, off_t offset)
-    // PROT (protection): the access types of read, write and execute are the permissions on the content
-    // MAP:
-    //  MAP_SHARED: share the mapping with all other processes, which are mapped to this object; changes will be written back to the file.
-    //  MAP_PRIVATE: the mapping will not be seen by any other processes, and the changes made will not be written to the file.
-    //  MAP_ANONYMOUS / MAP_ANON: the mapping is not connected to any files; is used as the basic primitive to extend the heap.
-    //  MAP_FIXED: the system has to be forced to use the exact mapping address specified in the address.
     int *map_ptr = mmap(address, mBytes,
                         PROT_READ | PROT_WRITE,
                         MAP_SHARED,
                         outputFD, 0);
     if (map_ptr == MAP_FAILED) {
-        perror("Mapping Failed\n");
+        perror("Ошибка при маппинге\n");
         return 1;
     }
-
     while ((ch = getchar()) != '\n' && ch != EOF);
     printf("После ввода символа программа будет записывать данные в память\n");
     getchar();
@@ -274,10 +258,10 @@ int main() {
 
 //    https://habr.com/ru/post/326138/
     pthread_t writeToMemoryThreads[D_THREADS];
-    memory_writer_data *args;
+    MemoryWriterData *args;
     int i;
 
-    printf("Writing random data to memory...\n");
+    printf("Запись случайных данных в память...\n");
     struct timespec start, finish;
     double elapsed;
     clock_gettime(CLOCK_MONOTONIC, &start);
@@ -291,17 +275,10 @@ int main() {
         args->start = i * mem_part;
         args->end = (i + 1) * mem_part;
         args->threadId = writeToMemoryThreads[i];
-//        int pthread_create(pthread_t *thread,
-//                           const pthread_attr_t *attr,
-//                           void *(*start)(void *),
-//                           void *arg);
-//        arg — это бестиповый указатель, содержащий аргументы потока.
-//        первый параметр - адрес для хранения идентификатора создаваемого потока типа pthread_t.
-//        attr - бестиповый указатель атрибутов потока pthread_attr_t; NULL, то поток создается с атрибутами по умолчанию.
-//        start - указателем на потоковую void * функцию, принимающей 1 переменную - бестиповый указатель.
+
         if (pthread_create(&writeToMemoryThreads[i], NULL, WriteToMemory, (void *) args)) {
             free(args);
-            perror("Can't create thread");
+            perror("Невозможно создать тред");
         }
 //        printf("%d %d\n", i, &(address)[i]);
 
@@ -327,7 +304,7 @@ int main() {
     clock_gettime(CLOCK_MONOTONIC, &finish);
     elapsed = (double) (finish.tv_sec - start.tv_sec);
     elapsed += (double) (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
-    printf("Writing in memory took %f seconds\n", elapsed);
+    printf("Запись в память заняла %f секунл\n", elapsed);
 
     while ((ch = getchar()) != '\n' && ch != EOF);
     printf("После ввода символа программа будет записывать данные в файл\n");
@@ -339,7 +316,7 @@ int main() {
 //    ================================
 
 
-    printf("Writing random data to files...\n");
+    printf("Запись случайных данных в файл...\n");
     clock_gettime(CLOCK_MONOTONIC, &start);
 
     int filesAmount = (A_DATA_SIZE / E_OUTPUT_SIZE) + 1;
@@ -347,34 +324,34 @@ int main() {
         filesAmount++;
     }
 
-    printf("Files amount: %d\n", filesAmount);
+    printf("Число файлов: %d\n", filesAmount);
 
 
-    thread_writer_data *writer_data = (thread_writer_data *) malloc(sizeof(thread_writer_data));
+    ThreadWriterData *writer_data = (ThreadWriterData *) malloc(sizeof(ThreadWriterData));
     pthread_t *thread_writer = (pthread_t *) malloc(sizeof(pthread_t));
     writer_data->ints_per_file = E_OUTPUT_SIZE * 1024 * 256;
     writer_data->filesAmount = filesAmount;
     writer_data->start = map_ptr;
     writer_data->end = map_ptr + mBytes / 4;
 
-    pthread_create(thread_writer, NULL, write_to_files, writer_data);
+    pthread_create(thread_writer, NULL, writeToFiles, writer_data);
     pthread_join(*thread_writer, NULL);
 
 
     clock_gettime(CLOCK_MONOTONIC, &finish);
     elapsed = (double) (finish.tv_sec - start.tv_sec);
     elapsed += (double) (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
-    printf("Writing to files took %f seconds\n", elapsed);
+    printf("Запись в файл заняла %f секунд\n", elapsed);
 
 //    ================================
 //    AGGREGATE DATA
 //    ================================
 
-    printf("Counting aggregating function...\n");
+    printf("Подсчет аггрегирующей функции.\n");
     clock_gettime(CLOCK_MONOTONIC, &start);
 
     pthread_t *reader_threads = (pthread_t *) malloc(I_AGG_THREADS * sizeof(pthread_t));
-    thread_reader_data *reader_data = (thread_reader_data *) malloc(I_AGG_THREADS * sizeof(thread_reader_data));
+    ThreadReaderData *reader_data = (ThreadReaderData *) malloc(I_AGG_THREADS * sizeof(ThreadReaderData));
     int file_number = 0;
     for (int i = 0; i < I_AGG_THREADS; ++i) {
         if (file_number >= filesAmount) {
@@ -386,7 +363,7 @@ int main() {
     }
 
     for (int i = 0; i < I_AGG_THREADS; ++i) {
-        pthread_create(&(reader_threads[i]), NULL, read_files, &reader_data[i]);
+        pthread_create(&(reader_threads[i]), NULL, readFiles, &reader_data[i]);
     }
     for (int i = 0; i < I_AGG_THREADS; i++) {
         pthread_join(reader_threads[i], NULL);
@@ -395,13 +372,13 @@ int main() {
     clock_gettime(CLOCK_MONOTONIC, &finish);
     elapsed = (double) (finish.tv_sec - start.tv_sec);
     elapsed += (double) (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
-    printf("Aggregation took %f seconds\n", elapsed);
+    printf("Аггрегирование заняло %f секунд\n", elapsed);
 
 
     if (munmap(map_ptr, mBytes) == -1) {
 //        close(outputFD);
         close(randomFD);
-        perror("Error un-mmapping the file");
+        perror("Ошибка при размапивании Лехи.");
         exit(EXIT_FAILURE);
     }
 
@@ -409,14 +386,13 @@ int main() {
     printf("После ввода символа программа будет записывать данные в файл\n");
     getchar();
 
-// Конец основного кода 0__0
 
     if (close(outputFD)) {
-        printf("Error during file closing.\n");
+        printf("Ошибка во время закрытия файла.\n");
     }
 
     if (close(randomFD)) {
-        printf("Error in file closing.\n");
+        printf("Ошибка во время закрытия файла.\n");
     }
 
 
